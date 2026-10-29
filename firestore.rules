@@ -1,0 +1,114 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function loggedIn() { return request.auth != null; }
+    function roomData(id) { return get(/databases/$(database)/documents/rooms/$(id)).data; }
+    function member(id) {
+      return loggedIn() && (roomData(id).ownerUid == request.auth.uid || roomData(id).partnerUid == request.auth.uid);
+    }
+    function sharedFields() { return ['reunion','together','anniversary','sharedMessage','city1','city2','lat1','lat2','lon1','lon2']; }
+    function validShared(d) {
+      return d.city1 is string && d.city1.size() > 0 && d.city1.size() <= 160
+        && d.city2 is string && d.city2.size() > 0 && d.city2.size() <= 160
+        && d.lat1 is number && d.lat1 >= -90 && d.lat1 <= 90
+        && d.lat2 is number && d.lat2 >= -90 && d.lat2 <= 90
+        && d.lon1 is number && d.lon1 >= -180 && d.lon1 <= 180
+        && d.lon2 is number && d.lon2 >= -180 && d.lon2 <= 180
+        && d.reunion is int && d.reunion >= 0
+        && d.together is int && d.together >= 0
+        && d.anniversary is string && d.anniversary.size() <= 20
+        && d.sharedMessage is string && d.sharedMessage.size() <= 200;
+    }
+
+    // Owner-only account mapping and personal cloud event backup.
+    match /users/{userId} {
+      allow get: if loggedIn() && request.auth.uid == userId;
+      allow list, delete: if false;
+      allow create, update: if loggedIn() && request.auth.uid == userId
+        && request.resource.data.keys().hasOnly(['roomId'])
+        && request.resource.data.roomId is string
+        && (request.resource.data.roomId == '' ||
+          getAfter(/databases/$(database)/documents/rooms/$(request.resource.data.roomId)).data.ownerUid == userId ||
+          getAfter(/databases/$(database)/documents/rooms/$(request.resource.data.roomId)).data.partnerUid == userId);
+      match /privateEvents/{eventId} {
+        function privateEventValid(d) {
+          return d.keys().hasOnly(['title','date','note','annual','reminders'])
+            && d.keys().hasAll(['title','date','note','annual','reminders'])
+            && d.title is string && d.title.size() > 0 && d.title.size() <= 120
+            && d.date is string && d.date.matches('[0-9]{4}-[0-9]{2}-[0-9]{2}')
+            && d.note is string && d.note.size() <= 1000
+            && d.annual is bool && d.reminders is string
+            && d.reminders.size() > 0 && d.reminders.size() <= 60
+            && d.reminders.matches('[0-9, ]+');
+        }
+        allow get, list: if loggedIn() && request.auth.uid == userId;
+        allow create, update: if loggedIn() && request.auth.uid == userId && privateEventValid(request.resource.data);
+        allow delete: if loggedIn() && request.auth.uid == userId;
+      }
+    }
+    match /invites/{code} {
+      // A 160-bit random invitation ID is required to retrieve the invite.
+      allow get: if loggedIn() && code.matches('[0-9a-f]{40}');
+      allow list, delete: if false;
+      allow create: if loggedIn()
+        && code.matches('[0-9a-f]{40}')
+        && request.resource.data.keys().hasOnly(['roomId','ownerUid','joinedUid','expiresAt'])
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.joinedUid == ''
+        && request.resource.data.expiresAt is int
+        && request.resource.data.expiresAt > request.time.toMillis()
+        && request.resource.data.expiresAt < request.time.toMillis() + 86400001
+        && request.resource.data.roomId is string
+        && getAfter(/databases/$(database)/documents/rooms/$(request.resource.data.roomId)).data.ownerUid == request.auth.uid
+        && getAfter(/databases/$(database)/documents/rooms/$(request.resource.data.roomId)).data.inviteId == code;
+      allow update: if loggedIn()
+        && resource.data.joinedUid == ''
+        && resource.data.ownerUid != request.auth.uid
+        && resource.data.expiresAt > request.time.toMillis()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['joinedUid'])
+        && request.resource.data.joinedUid == request.auth.uid
+        && getAfter(/databases/$(database)/documents/rooms/$(resource.data.roomId)).data.partnerUid == request.auth.uid;
+    }
+    match /rooms/{id} {
+      allow get: if loggedIn() && (resource.data.ownerUid == request.auth.uid || resource.data.partnerUid == request.auth.uid);
+      allow list, delete: if false;
+      allow create: if loggedIn()
+        && id.matches('[0-9a-f]{40}')
+        && request.resource.data.keys().hasOnly(['ownerUid','partnerUid','inviteId','reunion','together','anniversary','sharedMessage','city1','city2','lat1','lat2','lon1','lon2'])
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.partnerUid == ''
+        && request.resource.data.inviteId.matches('[0-9a-f]{40}')
+        && validShared(request.resource.data);
+      allow update: if loggedIn() && validShared(request.resource.data) && (
+        // Members can change only the explicitly shared values.
+        ((resource.data.ownerUid == request.auth.uid || resource.data.partnerUid == request.auth.uid)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(sharedFields()))
+        ||
+        // First-time join must atomically consume this room's random invitation.
+        (resource.data.partnerUid == ''
+          && resource.data.ownerUid != request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['partnerUid'])
+          && request.resource.data.partnerUid == request.auth.uid
+          && getAfter(/databases/$(database)/documents/invites/$(resource.data.inviteId)).data.joinedUid == request.auth.uid)
+      );
+
+
+      match /events/{eventId} {
+        function eventValid(d) {
+          return d.keys().hasOnly(['title','date','note','annual','reminders'])
+            && d.keys().hasAll(['title','date','note','annual','reminders'])
+            && d.title is string && d.title.size() > 0 && d.title.size() <= 120
+            && d.date is string && d.date.matches('[0-9]{4}-[0-9]{2}-[0-9]{2}')
+            && d.note is string && d.note.size() <= 1000
+            && d.annual is bool
+            && d.reminders is string && d.reminders.size() > 0 && d.reminders.size() <= 60
+            && d.reminders.matches('[0-9, ]+');
+        }
+        allow get, list: if member(id);
+        allow create, update: if member(id) && eventValid(request.resource.data);
+        allow delete: if member(id);
+      }
+
+    }
+  }
+}

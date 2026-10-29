@@ -1,0 +1,13 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:padding="12dp" android:orientation="vertical"
+    android:gravity="center" android:background="@drawable/transparent_bg">
+    <TextView android:id="@+id/widget_names" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Joel ♥ Libina" android:textColor="#FFFFFF" android:textSize="15sp" android:textStyle="bold" android:gravity="center"/>
+    <TextView android:id="@+id/widget_distance" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Our distance: 0 mi" android:textColor="#FFFFFF" android:textSize="18sp" android:gravity="center" android:paddingTop="5dp" />
+    <TextView android:id="@+id/widget_countdown" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Set your reunion date ♡" android:textColor="#FFFFFF" android:textSize="16sp" android:gravity="center" android:paddingTop="4dp" />
+    <TextView android:id="@+id/widget_message" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Every mile is worth it ♥" android:textColor="#FFFFFF" android:textSize="12sp" android:gravity="center" android:paddingTop="5dp" android:maxLines="2" />
+    <TextView android:id="@+id/widget_wedding" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" android:textColor="#FFFFFF" android:textSize="14sp" android:gravity="center" android:paddingTop="4dp" android:visibility="gone"/>
+    <TextView android:id="@+id/widget_next" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" android:textColor="#FFFFFF" android:textSize="12sp" android:gravity="center" android:paddingTop="4dp" android:maxLines="2" android:visibility="gone"/>
+    <TextView android:id="@+id/widget_romance" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" android:textColor="#FFFFFF" android:textSize="12sp" android:gravity="center" android:paddingTop="4dp" android:maxLines="2" android:visibility="gone"/>
+</LinearLayout>

@@ -6,6 +6,7 @@ import android.app.TimePickerDialog;
 import android.os.Bundle;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.view.View;
 import android.widget.*;
 import java.time.*;
@@ -17,6 +18,8 @@ public class MainActivity extends Activity {
     LinearLayout root;
     TextView preview;
     int activeTab=0;
+    final java.util.Set<String> expandedNotes=new java.util.HashSet<>();
+    final android.os.Handler uiHandler=new android.os.Handler(android.os.Looper.getMainLooper());
     LinearLayout pageContainer;
     final int bg=Color.rgb(19,17,30), panel=Color.rgb(39,32,55), white=Color.WHITE;
     @Override public void onCreate(Bundle b) { super.onCreate(b); getWindow().setStatusBarColor(bg); getWindow().setNavigationBarColor(bg); build(); DailyReceiver.schedule(this); CoupleWidget.refresh(this); if(GoogleLogin.signedIn()) { FirebaseBridge.restorePair(this); FirebaseBridge.listen(this); EventStore.start(this); } SyncWorker.schedule(this); ReminderWorker.schedule(this); ReminderWorker.runNow(this); if(android.os.Build.VERSION.SDK_INT>=33 && checkSelfPermission("android.permission.POST_NOTIFICATIONS")!=android.content.pm.PackageManager.PERMISSION_GRANTED) requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"},17); }
@@ -43,8 +46,10 @@ public class MainActivity extends Activity {
         button(p,"Search and select a worldwide city",()->CitySearch.open(this,n,()->{changed();build();}));
     }
     String dateString(long ms){if(ms==0)return "Not set";return Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("MMM d, yyyy h:mm a z"));}
-    @Override protected void onResume(){super.onResume();if(GoogleLogin.signedIn()) { FirebaseBridge.restorePair(this); FirebaseBridge.listen(this); EventStore.start(this); }}
-    @Override protected void onPause(){FirebaseBridge.stop();super.onPause();}
+    @Override protected void onResume(){super.onResume();EventStore.onChange=()->{if(activeTab==1)refreshDatesSoon();};if(GoogleLogin.signedIn()) { FirebaseBridge.restorePair(this); FirebaseBridge.listen(this); EventStore.start(this); }}
+    @Override protected void onPause(){EventStore.onChange=null;FirebaseBridge.stop();super.onPause();}
+    void refreshDatesSoon(){uiHandler.removeCallbacks(refreshDatesTask);uiHandler.postDelayed(refreshDatesTask,220);}
+    final Runnable refreshDatesTask=()->{if(activeTab==1 && !isFinishing())build();};
     void authFeedback(String message) {
         runOnUiThread(() -> {
             Toast.makeText(this, message, Toast.LENGTH_LONG).show();
@@ -102,17 +107,33 @@ public class MainActivity extends Activity {
         label(p,"After editing shared details, tap Save Shared Details. Android may delay background widget refreshes.",12);
     }
     void eventsSection(){
-        LinearLayout p=section();label(p,"IMPORTANT DATES & MEMORIES ❤️",17);
-        label(p,"Dates back up privately to Firestore after sign-in, even before pairing. When paired, all your dates become shared. Default reminders: 7, 5, 1 days and event day.",13);
-        label(p,"Backup: "+CoupleData.get(this,"eventSyncStatus",GoogleLogin.signedIn()?"Not yet synchronized":"On phone only"),13);
-        button(p,"Add an important date",()->editEvent(null));
-        button(p,"Refresh dates from Firebase",()->{EventStore.fetch(this);Toast.makeText(this,"Refreshing dates",Toast.LENGTH_SHORT).show();});
-        java.util.List<EventStore.Event> events=EventStore.local(this);
-        events.sort((a,b)->Long.compare(EventStore.daysUntil(a,java.time.LocalDate.now())<0?Long.MAX_VALUE:EventStore.daysUntil(a,java.time.LocalDate.now()),EventStore.daysUntil(b,java.time.LocalDate.now())<0?Long.MAX_VALUE:EventStore.daysUntil(b,java.time.LocalDate.now())));
-        if(events.isEmpty())label(p,"No saved events yet. Add your first anniversary or birthday.",14);
+        LinearLayout p=section();
+        label(p,"Your dates are shared after pairing. Reminders: 7, 5, 1, and 0 days by default.",13);
+        label(p,"Cloud status: "+EventStore.state(this),13).setTextColor(0xffdac3e6);
+        button(p,"Add important date",()->editEvent(null));
+        button(p,"Refresh from Firebase",()->{EventStore.fetch(this);Toast.makeText(this,"Refreshing dates",Toast.LENGTH_SHORT).show();});
+        java.util.List<EventStore.Event> events=EventStore.visible(this);
+        events.sort((a,b)->b.date.compareTo(a.date));
+        if(events.isEmpty())label(p,"No important dates yet.",14);
+        DateTimeFormatter format=DateTimeFormatter.ofPattern("MMMM d, yyyy",java.util.Locale.ENGLISH);
         for(EventStore.Event e:events){
-            label(p,e.title+" · "+EventStore.description(e,java.time.LocalDate.now())+"\n"+e.date+(e.annual?" · Every year":"")+(e.note.isEmpty()?"":"\n"+e.note),14);
-            button(p,"Edit / delete: "+e.title,()->editEvent(e));
+            LinearLayout card=section();
+            GradientDrawable background=new GradientDrawable();background.setColor(0xff332943);background.setCornerRadius(22);card.setBackground(background);
+            TextView heading=label(card,e.title,17);heading.setTypeface(null,Typeface.BOLD);
+            String pretty=e.date;try{pretty=LocalDate.parse(e.date).format(format);}catch(Exception ignored){}
+            label(card,pretty+(e.annual?" · Every year":""),14).setTextColor(0xffe1c5d5);
+            label(card,EventStore.description(e,LocalDate.now()),13);
+            if(!e.note.isEmpty()){
+                String key=e.id;
+                boolean expanded=expandedNotes.contains(key);
+                TextView note=label(card,expanded?e.note:(e.note.length()>95?e.note.substring(0,95)+"…":e.note),14);
+                if(e.note.length()>95){
+                    Button expand=button(card,expanded?"Show less":"Read more",()->{if(expanded)expandedNotes.remove(key);else expandedNotes.add(key);refreshDatesSoon();});
+                    expand.setTextSize(12);
+                }
+            }
+            Button editButton=button(card,"Edit",()->editEvent(e));
+            LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,-2);lp.gravity=android.view.Gravity.END;editButton.setLayoutParams(lp);editButton.setTextSize(12);editButton.setAllCaps(false);
         }
     }
     void editEvent(EventStore.Event old){
@@ -132,12 +153,20 @@ public class MainActivity extends Activity {
         new android.app.AlertDialog.Builder(this,android.app.AlertDialog.THEME_DEVICE_DEFAULT_DARK).setTitle(old==null?"Add a special date":"Edit special date").setView(eventScroll)
           .setPositiveButton("Save",(dialog,which)->{
             EventStore.Event event=new EventStore.Event(old==null?"":old.id,title.getText().toString().trim(),date.getText().toString().trim(),note.getText().toString().trim(),annual.isChecked(),days.getText().toString().trim());
-            EventStore.save(this,event,message->runOnUiThread(()->{Toast.makeText(this,message,Toast.LENGTH_LONG).show();EventStore.fetch(this);new android.os.Handler(getMainLooper()).postDelayed(this::build,700);}));
+            EventStore.save(this,event,message->runOnUiThread(()->{Toast.makeText(this,message,Toast.LENGTH_LONG).show();refreshDatesSoon();}));
           })
           .setNeutralButton(old==null?" ":"Delete",(dialog,which)->{
             if(old==null)return;
             new android.app.AlertDialog.Builder(this).setMessage("Delete "+old.title+" on both phones?")
-              .setPositiveButton("Delete",(d,w)->EventStore.delete(this,old,message->runOnUiThread(()->{Toast.makeText(this,message,Toast.LENGTH_SHORT).show();EventStore.fetch(this);new android.os.Handler(getMainLooper()).postDelayed(this::build,700);})) )
+              .setPositiveButton("Delete",(d,w)->{
+                  java.util.List<EventStore.Event> remaining=EventStore.local(this);
+                  remaining.removeIf(x->x.id.equals(old.id));EventStore.persist(this,remaining);refreshDatesSoon();
+                  new android.app.AlertDialog.Builder(this).setTitle("Date removed")
+                    .setMessage("Undo removing “"+old.title+"”? Choose Keep deleted to confirm the cloud deletion.")
+                    .setPositiveButton("Undo",(x,y)->{java.util.List<EventStore.Event> restored=EventStore.local(this);restored.removeIf(z->z.id.equals(old.id));restored.add(old);EventStore.persist(this,restored);refreshDatesSoon();})
+                    .setNegativeButton("Keep deleted",(x,y)->EventStore.delete(this,old,message->runOnUiThread(this::refreshDatesSoon)))
+                    .setCancelable(false).show();
+              })
               .setNegativeButton("Cancel",null).show();
           }).setNegativeButton("Cancel",null).show();
     }

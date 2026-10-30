@@ -22,8 +22,29 @@ final class EventStore {
  }
  interface Callback {void done(String status);}
  private static ListenerRegistration listener;
+ private static final Set<String> uploads=Collections.synchronizedSet(new HashSet<>());
+ private static final Set<String> deletions=Collections.synchronizedSet(new HashSet<>());
+ private static final Set<String> edits=Collections.synchronizedSet(new HashSet<>());
+ static Runnable onChange;
+ static void notifyChanged(Context c){if(onChange!=null && c instanceof android.app.Activity)((android.app.Activity)c).runOnUiThread(onChange);}
+ static String signature(Event e){return e.title.trim()+"\u0001"+e.date+"\u0001"+e.note.trim()+"\u0001"+e.annual+"\u0001"+e.reminders;}
+ static List<Event> visible(Context c){
+  LinkedHashMap<String,Event> bySignature=new LinkedHashMap<>();
+  for(Event e:local(c)){
+   String sig=signature(e);
+   Event prior=bySignature.get(sig);
+   if(prior==null || (isPending(prior)&&!isPending(e)))bySignature.put(sig,e);
+  }
+  return new ArrayList<>(bySignature.values());
+ }
+ static String state(Context c){
+  if(uid()==null)return "On phone only — sign in to sync";
+  String s=CoupleData.get(c,"eventSyncStatus","Not yet synchronized");
+  return s;
+ }
+ static void mark(Context c,String message){CoupleData.set(c,"eventSyncStatus",message);notifyChanged(c);}
  static List<Event> local(Context c){List<Event> list=new ArrayList<>();try{JSONArray a=new JSONArray(CoupleData.get(c,"event_cache","[]"));for(int i=0;i<a.length();i++)list.add(Event.parse(a.getJSONObject(i)));}catch(Exception ignored){}return list;}
- static void persist(Context c,List<Event> events){JSONArray a=new JSONArray();for(Event e:events)a.put(e.json());CoupleData.set(c,"event_cache",a.toString());ReminderWorker.schedule(c);ReminderWorker.runNow(c);}
+ static void persist(Context c,List<Event> events){JSONArray a=new JSONArray();for(Event e:events)a.put(e.json());CoupleData.set(c,"event_cache",a.toString());ReminderWorker.schedule(c);ReminderWorker.runNow(c);notifyChanged(c);}
  static CollectionReference collection(Context c){return FirebaseFirestore.getInstance().collection("rooms").document(FirebaseBridge.room(c)).collection("events");}
  static String uid(){return com.google.firebase.auth.FirebaseAuth.getInstance().getUid();}
  static CollectionReference privateCollection(Context c){
@@ -32,7 +53,7 @@ final class EventStore {
  }
  static CollectionReference activeCollection(Context c){return FirebaseBridge.isPaired(c)?collection(c):privateCollection(c);}
  static boolean isPending(Event e){return e.id.startsWith("local_");}
- static void mark(Context c,String message){CoupleData.set(c,"eventSyncStatus",message);}
+ 
  static void mergeSnapshot(Context c,QuerySnapshot snapshot){
   List<Event> values=new ArrayList<>();
   for(DocumentSnapshot d:snapshot.getDocuments()){
@@ -40,7 +61,17 @@ final class EventStore {
    Boolean annual=d.getBoolean("annual");
    values.add(new Event(d.getId(),title,date,Objects.toString(d.getString("note"),""),annual!=null&&annual,Objects.toString(d.getString("reminders"),"7,5,1,0")));
   }
-  for(Event pending:local(c))if(isPending(pending))values.add(pending);
+  Set<String> remoteIds=new HashSet<>();Set<String> remoteSignatures=new HashSet<>();
+  for(Event e:values){remoteIds.add(e.id);remoteSignatures.add(signature(e));}
+  for(Event pending:local(c)){
+   if(deletions.contains(pending.id))continue;
+   if(isPending(pending)){
+    String actualId=pending.id.substring("local_".length());
+    if(!remoteIds.contains(actualId)&&!remoteSignatures.contains(signature(pending)))values.add(pending);
+   }else if(edits.contains(pending.id)){
+    values.removeIf(e->e.id.equals(pending.id));values.add(pending);
+   }
+  }
   persist(c,values);
  }
  static void start(Context c){
@@ -49,14 +80,14 @@ final class EventStore {
    if(error!=null){mark(c,"Offline / waiting to sync");return;}
    if(snapshot==null)return;
    mergeSnapshot(c,snapshot);
-   mark(c,snapshot.getMetadata().hasPendingWrites()?"Syncing…":snapshot.getMetadata().isFromCache()?"Saved locally / offline":"Backed up to Firebase");
+   if(!snapshot.getMetadata().isFromCache()&&!snapshot.getMetadata().hasPendingWrites() && uploads.isEmpty() && edits.isEmpty() && deletions.isEmpty())mark(c,"Synced · "+java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("MMM d, h:mm a")));else mark(c,"Syncing or offline — changes queued");
   });
   uploadLocalDrafts(c);
  }
  static void stop(){if(listener!=null){listener.remove();listener=null;}}
  static void fetch(Context c){
   if(uid()==null)return;
-  activeCollection(c).get(Source.DEFAULT).addOnSuccessListener(snapshot->{mergeSnapshot(c,snapshot);mark(c,snapshot.getMetadata().isFromCache()?"Saved locally / offline":"Backed up to Firebase");uploadLocalDrafts(c);})
+  activeCollection(c).get(Source.DEFAULT).addOnSuccessListener(snapshot->{mergeSnapshot(c,snapshot);mark(c,snapshot.getMetadata().isFromCache()?"Offline · cached dates":"Synced · "+java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("MMM d, h:mm a")));uploadLocalDrafts(c);})
   .addOnFailureListener(e->mark(c,"Offline / waiting to sync"));
  }
  static boolean valid(Event event,Callback cb){
@@ -68,34 +99,41 @@ final class EventStore {
  }
  static void save(Context c,Event event,Callback cb){
   if(!valid(event,cb))return;
-  if(event.id.isEmpty())event.id="local_"+UUID.randomUUID();
+  boolean fresh=event.id.isEmpty();
+  if(fresh)event.id="local_"+UUID.randomUUID();
   List<Event> list=local(c);list.removeIf(x->x.id.equals(event.id));list.add(event);persist(c,list);
-  if(uid()==null){mark(c,"Saved on phone · sign in to back up");cb.done("Saved on phone. Sign in to back up.");return;}
-  mark(c,"Syncing…");cb.done("Saved locally · syncing to Firebase");
-  uploadLocalDrafts(c);
-  if(!isPending(event)){
-   // Keep the same stable document ID across private and shared stores.
-   activeCollection(c).document(event.id).set(event.map()).addOnSuccessListener(v->{mark(c,"Backed up to Firebase");fetch(c);})
-    .addOnFailureListener(e->mark(c,"Saved locally / offline · awaiting sync"));
-  }
+  if(uid()==null){mark(c,"On phone only — sign in to sync");cb.done("Saved locally");return;}
+  mark(c,"Syncing…");cb.done("Saved · syncing");
+  if(isPending(event)){uploadLocalDrafts(c);return;}
+  edits.add(event.id);
+  activeCollection(c).document(event.id).set(event.map()).addOnSuccessListener(v->{
+   edits.remove(event.id);mark(c,"Synced · "+java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("MMM d, h:mm a")));fetch(c);
+  }).addOnFailureListener(e->{edits.remove(event.id);mark(c,"Offline · changes pending");});
  }
  static void delete(Context c,Event event,Callback cb){
-  List<Event> list=local(c);list.removeIf(x->x.id.equals(event.id));persist(c,list);
-  if(uid()==null||isPending(event)){cb.done("Removed locally.");return;}
-  activeCollection(c).document(event.id).delete().addOnSuccessListener(v->{mark(c,"Backed up to Firebase");cb.done("Deleted.");})
-   .addOnFailureListener(e->{mark(c,"Offline / deletion not synced");cb.done("Removed locally, cloud deletion pending. Reconnect before refreshing.");});
+  String key=event.id;
+  deletions.add(key);
+  List<Event> list=local(c);list.removeIf(x->x.id.equals(key));persist(c,list);
+  cb.done("Removed from view");
+  if(uid()==null||isPending(event)){deletions.remove(key);mark(c,"On phone only");return;}
+  mark(c,"Deleting…");
+  activeCollection(c).document(key).delete().addOnSuccessListener(v->{deletions.remove(key);mark(c,"Synced · deletion saved");fetch(c);})
+   .addOnFailureListener(e->{deletions.remove(key);mark(c,"Offline · deletion awaiting sync");});
  }
  static void uploadLocalDrafts(Context c){
   if(uid()==null)return;
   for(Event e:local(c)){
-   if(!isPending(e))continue;
+   if(!isPending(e)||deletions.contains(e.id)||!uploads.add(e.id))continue;
    String stableId=e.id.substring("local_".length());
    activeCollection(c).document(stableId).set(e.map())
    .addOnSuccessListener(v->{
+    uploads.remove(e.id);
     List<Event> values=local(c);
     for(Event item:values)if(item.id.equals(e.id))item.id=stableId;
-    persist(c,values);mark(c,"Backed up to Firebase");
-   }).addOnFailureListener(ex->mark(c,"Saved locally / offline · awaiting sync"));
+    // Remove duplicate remote/local copies by stable document ID.
+    LinkedHashMap<String,Event> unique=new LinkedHashMap<>();for(Event item:values)unique.put(item.id,item);
+    persist(c,new ArrayList<>(unique.values()));mark(c,"Synced · "+java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("MMM d, h:mm a")));
+   }).addOnFailureListener(ex->{uploads.remove(e.id);mark(c,"Offline · changes pending");});
   }
  }
  /** Copy personal account events to the paired collection; retain private backup. */
@@ -104,7 +142,12 @@ final class EventStore {
   privateCollection(c).get().addOnSuccessListener(snap->{
    for(DocumentSnapshot d:snap.getDocuments()){
     if(d.getData()==null)continue;
-    collection(c).document(d.getId()).set(d.getData());
+    DocumentReference target=collection(c).document(d.getId());
+    FirebaseFirestore.getInstance().runTransaction(transaction->{
+     DocumentSnapshot existing=transaction.get(target);
+     if(!existing.exists())transaction.set(target,d.getData());
+     return null;
+    });
    }
    uploadLocalDrafts(c);
    start(c);

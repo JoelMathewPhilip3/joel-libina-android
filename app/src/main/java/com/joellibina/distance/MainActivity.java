@@ -75,9 +75,10 @@ public class MainActivity extends Activity {
             FirebaseBridge.stop(); GoogleLogin.signOut(); build();
         });
         label(p,"No GPS or tracking. Either partner can edit BOTH cities and sync to both widgets.",13);
-        label(p,"Pair status: "+(FirebaseBridge.isPaired(this)?"Connected":"Not paired"),13);
+        label(p,"Pair status: "+(!FirebaseBridge.isPaired(this)?"Not paired":!FirebaseBridge.roomVerified()?"Checking Firebase…":FirebaseBridge.hasPartner()?"Connected to partner ♥":"Waiting for Libina to join"),13);
         String code=FirebaseBridge.invite(this);
-        if(!code.isEmpty()){
+        if(!code.isEmpty() && FirebaseBridge.roomVerified() && !FirebaseBridge.hasPartner()){
+            label(p,FirebaseBridge.inviteExpiry()>0 && System.currentTimeMillis()>FirebaseBridge.inviteExpiry()?"Invitation expired — generate a new code.":"Share the invitation privately (valid for 24 hours).",12);
             TextView key=label(p,"Private invitation: "+code,12);key.setTextIsSelectable(true);
             button(p,"Copy pairing code",()->{
                 android.content.ClipboardManager clipboard=(android.content.ClipboardManager)getSystemService(CLIPBOARD_SERVICE);
@@ -94,6 +95,9 @@ public class MainActivity extends Activity {
                 Toast.makeText(this,m,Toast.LENGTH_LONG).show();build();
             })));
         }else{
+            if(FirebaseBridge.roomVerified() && !FirebaseBridge.hasPartner()){
+                button(p,"Generate new pairing code (same room)",()->FirebaseBridge.renewInvite(this,m->runOnUiThread(()->{Toast.makeText(this,m,Toast.LENGTH_LONG).show();build();})));
+            }
             button(p,"Save Shared Details",()->FirebaseBridge.syncShared(this,m->runOnUiThread(()->{
                 Toast.makeText(this,m,Toast.LENGTH_LONG).show();changed();build();
             })));
@@ -171,18 +175,11 @@ public class MainActivity extends Activity {
           }).setNegativeButton("Cancel",null).show();
     }
     void premiumSection(){
-        LinearLayout p=section(); label(p,"PREMIUM EXPERIENCE & BATTERY",17);
-        label(p,"Your personal theme and sync profile stay on this phone. No GPS or background tracking.",12);
-        String[] themes={"Midnight Rose","Ivory Romance","Sage & Cream","OLED Black","Transparent","Glass"};
-        Spinner theme=new Spinner(this);theme.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,themes));
-        String saved=CoupleData.get(this,"premiumTheme","Midnight Rose");for(int i=0;i<themes.length;i++)if(themes[i].equals(saved))theme.setSelection(i);p.addView(theme);
+        LinearLayout p=section();label(p,"BATTERY & SYNC",17);
+        label(p,"Only background sync frequency is configured here. Set widget appearance above.",12);
         String[] battery={"Eco (4 hours)","Balanced (2 hours)","Fast sync (30 minutes)"};
         Spinner profile=new Spinner(this);profile.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,battery));profile.setSelection(Math.max(0,Math.min(2,(int)CoupleData.number(this,"batteryProfile",1))));p.addView(profile);
-        button(p,"Save theme and battery profile",()->{CoupleData.set(this,"premiumTheme",themes[theme.getSelectedItemPosition()]);CoupleData.set(this,"batteryProfile",""+profile.getSelectedItemPosition());
-           String t=themes[theme.getSelectedItemPosition()];CoupleData.set(this,"style",(t.equals("Transparent")?"Transparent":"Glass"));
-           CoupleData.set(this,"textColor",t.equals("Ivory Romance")||t.equals("Sage & Cream")?"Black":"White");SyncWorker.schedule(this);changed();});
-        CheckBox togetherMode=check(p,"Together Mode (show marriage duration instead of distance)","togetherMode",false);
-        label(p,"Relationship date and marriage date are configured in Our Story. Together Mode can be switched on or off any time.",12);
+        button(p,"Save battery profile",()->{CoupleData.set(this,"batteryProfile",""+profile.getSelectedItemPosition());SyncWorker.schedule(this);Toast.makeText(this,"Battery profile saved",Toast.LENGTH_SHORT).show();});
     }
     void switchTab(int n){activeTab=n;build();}
     void homeContent(){
@@ -213,6 +210,7 @@ public class MainActivity extends Activity {
         check(p,"Reunion countdown","widgetReunion",true);
         check(p,"Our story in months and weeks","widgetStory",true);
         check(p,"Wedding countdown (auto-hide after wedding)","widgetWedding",true);
+        check(p,"Together Mode (married duration instead of distance)","togetherMode",false);
         check(p,"Next important date","widgetNext",false);
         check(p,"Show daily romantic quote","widgetRomance",false);
         p=section();label(p,"WIDGET APPEARANCE",16);String[] styles={"Transparent","Glass"};Spinner style=new Spinner(this);style.setAdapter(spinnerAdapter(styles));style.setSelection(CoupleData.get(this,"style","Transparent").equals("Glass")?1:0);p.addView(style);String[] colors={"White","Pink","Black"};Spinner color=new Spinner(this);color.setAdapter(spinnerAdapter(colors));String picked=CoupleData.get(this,"textColor","White");color.setSelection(picked.equals("Pink")?1:picked.equals("Black")?2:0);p.addView(color);button(p,"Save appearance",()->{CoupleData.set(this,"style",styles[style.getSelectedItemPosition()]);CoupleData.set(this,"textColor",colors[color.getSelectedItemPosition()]);changed();});check(p,"Rotate romantic quotes every 24 hours","messages",true);

@@ -76,8 +76,8 @@ final class EventStore {
  }
  static void start(Context c){
   stop();if(uid()==null)return;
-  listener=activeCollection(c).addSnapshotListener((snapshot,error)->{
-   if(error!=null){mark(c,"Offline / waiting to sync");return;}
+  listener=activeCollection(c).addSnapshotListener(MetadataChanges.INCLUDE,(snapshot,error)->{
+   if(error!=null){mark(c,"Sync error: "+error.getMessage());return;}
    if(snapshot==null)return;
    mergeSnapshot(c,snapshot);
    if(!snapshot.getMetadata().isFromCache()&&!snapshot.getMetadata().hasPendingWrites() && uploads.isEmpty() && edits.isEmpty() && deletions.isEmpty())mark(c,"Synced · "+java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("MMM d, h:mm a")));else mark(c,"Syncing or offline — changes queued");
@@ -133,7 +133,7 @@ final class EventStore {
     // Remove duplicate remote/local copies by stable document ID.
     LinkedHashMap<String,Event> unique=new LinkedHashMap<>();for(Event item:values)unique.put(item.id,item);
     persist(c,new ArrayList<>(unique.values()));mark(c,"Synced · "+java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("MMM d, h:mm a")));
-   }).addOnFailureListener(ex->{uploads.remove(e.id);mark(c,"Offline · changes pending");});
+   }).addOnFailureListener(ex->{uploads.remove(e.id);mark(c,"Upload failed: "+ex.getMessage());});
   }
  }
  /** Copy personal account events to the paired collection; retain private backup. */

@@ -67,7 +67,8 @@ service cloud.firestore {
         && resource.data.expiresAt > request.time.toMillis()
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['joinedUid'])
         && request.resource.data.joinedUid == request.auth.uid
-        && getAfter(/databases/$(database)/documents/rooms/$(resource.data.roomId)).data.partnerUid == request.auth.uid;
+        && getAfter(/databases/$(database)/documents/rooms/$(resource.data.roomId)).data.partnerUid == request.auth.uid
+        && getAfter(/databases/$(database)/documents/rooms/$(resource.data.roomId)).data.inviteId == code;
     }
     match /rooms/{id} {
       allow get: if loggedIn() && (resource.data.ownerUid == request.auth.uid || resource.data.partnerUid == request.auth.uid);
@@ -83,6 +84,13 @@ service cloud.firestore {
         // Members can change only the explicitly shared values.
         ((resource.data.ownerUid == request.auth.uid || resource.data.partnerUid == request.auth.uid)
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(sharedFields()))
+        ||
+        (resource.data.ownerUid == request.auth.uid
+          && resource.data.partnerUid == ''
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['inviteId'])
+          && request.resource.data.inviteId.matches('[0-9a-f]{40}')
+          && getAfter(/databases/$(database)/documents/invites/$(request.resource.data.inviteId)).data.ownerUid == request.auth.uid
+          && getAfter(/databases/$(database)/documents/invites/$(request.resource.data.inviteId)).data.roomId == id)
         ||
         // First-time join must atomically consume this room's random invitation.
         (resource.data.partnerUid == ''
